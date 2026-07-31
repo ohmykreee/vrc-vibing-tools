@@ -11,5 +11,5 @@
 
 ## 工具简介
 1. BlendShapeSync：最早的小工具，同步两个相同模型的 BlendShape 状态，基本上用不着。
-2. Vpd2Amin：将 MMD 的 VPD 文件转换为单帧 Humanoid 可用的 Anim 文件。
-3. 将多个姿势 Anim 文件合并为 [BUDDYWORKS Poses Extension](https://repo.buddyworks.wtf/) 可用的 PoseBank 格式。
+2. Vpd2Anim：将 MMD 的 VPD 文件转换为单帧 Humanoid 可用的 Anim 文件。
+3. PoseBankBuilder：将多个姿势 Anim 文件合并为 [BUDDYWORKS Poses Extension](https://repo.buddyworks.wtf/) 可用的 PoseBank 格式。
