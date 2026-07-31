@@ -2,6 +2,11 @@ name: Build and Release
 
 on:
   workflow_dispatch:
+  release:
+    types: [created]
+
+permissions:
+  contents: write 
 
 jobs:
   build:
@@ -33,3 +38,9 @@ jobs:
         with:
           name: VibingTools.unitypackage
           path: unity/Build/VibingTools.unitypackage
+
+      - name: attach to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v3
+        with:
+          files: Unity/Build/VibingTools.unitypackage

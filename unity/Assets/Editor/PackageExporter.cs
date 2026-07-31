@@ -1,3 +1,5 @@
+// Co-coded with DeepSeek V4 Pro (preview, thinking) in AstrBot
+
 using System.IO;
 using UnityEditor;
 
