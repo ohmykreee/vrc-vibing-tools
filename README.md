@@ -5,9 +5,12 @@
 3. 没有义务提供使用指导
 
 ## 安装/使用方法
-1. Clone 整个项目
+1. 克隆/下载整个项目
 2. 将工具代码复制到 `Assets/Editor` 下
-3. （TODO）写一个 workflows 在线编译 UnityPackage 出来
+
+或者：
+
+1. 去 [Releases](https://github.com/ohmykreee/vrc-vibing-tools/releases) 中下载最新的 UnityPackage 然后双击导入。
 
 ## 工具简介
 1. BlendShapeSync：最早的小工具，同步两个相同模型的 BlendShape 状态，基本上用不着。
