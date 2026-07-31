@@ -327,11 +327,22 @@ namespace VpdToAnim
             DragAndDrop.visualMode = DragAndDropVisualMode.Copy;
             if (e.type != EventType.DragPerform) { e.Use(); return false; }
             DragAndDrop.AcceptDrag();
+            // 从 Project 窗口拖入时，同一文件会同时出现在 objectReferences 和 paths 中。
+            // 先按资产加入并记录其路径，paths 循环里跳过这些路径，否则每个文件会进列表两次。
+            var addedAssetPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
             foreach (var obj in DragAndDrop.objectReferences)
-                if (obj is TextAsset t) AddBatch(t, null);
+                if (obj is TextAsset t)
+                {
+                    AddBatch(t, null);
+                    var ap = AssetDatabase.GetAssetPath(t);
+                    if (!string.IsNullOrEmpty(ap)) addedAssetPaths.Add(Path.GetFullPath(ap));
+                }
             foreach (var p in DragAndDrop.paths)
             {
-                if (File.Exists(p) && IsVpdPath(p)) AddBatch(null, p);
+                if (File.Exists(p) && IsVpdPath(p))
+                {
+                    if (!addedAssetPaths.Contains(Path.GetFullPath(p))) AddBatch(null, p);
+                }
                 else if (Directory.Exists(p)) AddFolderContents(p);
             }
             e.Use();
