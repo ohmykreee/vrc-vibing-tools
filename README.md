@@ -1,5 +1,5 @@
 # Vibing Tool-sets for VRChat Project
-一些为了 VRChat 改模借助 AI 写的一些小工具。使用 MIT 协议开源。
+一些为了 VRChat 改模借助 AI 写的一些小工具。在工具栏菜单的 `Tools/Vibing Tools` 中。使用 MIT 协议开源。
 1. 不保证代码质量/功能健全；
 2. 不对把你项目弄崩负责；
 3. 没有义务提供使用指导。
