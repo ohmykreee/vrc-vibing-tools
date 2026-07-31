@@ -43,4 +43,4 @@ jobs:
         if: github.event_name == 'release'
         uses: softprops/action-gh-release@v3
         with:
-          files: Unity/Build/VibingTools.unitypackage
+          files: unity/Build/VibingTools.unitypackage
