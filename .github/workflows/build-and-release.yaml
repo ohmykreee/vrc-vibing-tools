@@ -15,7 +15,7 @@ jobs:
         run: cp -r src unity/Assets/Editor/VibingTools
 
       - name: pack unitypackage
-        uses: game-ci/unity-builder@v4
+        uses: game-ci/unity-builder@v5
         env:
           UNITY_LICENSE: ${{ secrets.UNITY_LICENSE }}
           UNITY_EMAIL: ${{ secrets.UNITY_EMAIL }}
@@ -25,9 +25,11 @@ jobs:
           projectPath: unity
           targetPlatform: StandaloneWindows64
           buildMethod: ExportUnityPackage.Export
+          allowDirtyBuild: true
+          versioning: None
 
       - name: upload artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: VibingTools.unitypackage
           path: unity/Build/VibingTools.unitypackage
