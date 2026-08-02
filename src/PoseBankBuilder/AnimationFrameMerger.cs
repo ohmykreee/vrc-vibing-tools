@@ -1,4 +1,4 @@
-// Co-coded with ChatGPT 5.5 Thinking (high, free account) in Webchat
+// Co-coded with DeepSeek V4 Flash (max) in OpenCode
 
 using System;
 using System.Collections.Generic;
