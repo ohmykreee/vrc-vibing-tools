@@ -11,6 +11,15 @@ using Object = UnityEngine.Object;
 /// 将多个 AnimationClip 的第 0 帧合并为一个 Pose Bank：
 /// 第 i 个源 Clip 的第 0 帧 -> 输出 Clip 的第 i 帧。
 ///
+/// 输出格式对齐 BUDDYWORKS Poses Extension 官方 Posebank Creator：
+/// - 帧率默认 60，第 i 个 Pose 写在 i / FPS 秒处；
+/// - 帧间切线默认 Constant（离散硬切换）；可选 Linear（官方一致，对采样时间
+///   误差更稳健）或 Auto；
+/// - Clip 设置 keepOriginalPositionY/XZ = true 等（官方一致），使 Root 原点曲线
+///   逐帧直接应用、不经过 root-motion 跨帧积分，每个单帧动作的原点只取决于
+///   它自己的源动画；
+/// - 源动画缺少 Root 原点曲线时继承列表内第一个可用值，避免原点被拉回地面。
+///
 /// 请将本文件放在 Assets/Editor/ 目录下。
 /// </summary>
 public sealed class PoseBankBuilderWindow : EditorWindow
@@ -21,13 +30,26 @@ public sealed class PoseBankBuilderWindow : EditorWindow
         Abort
     }
 
+    private enum PoseTangentMode
+    {
+        Linear,
+        Constant,
+        Auto
+    }
+
     [SerializeField] private List<AnimationClip> sourceClips = new List<AnimationClip>();
     [SerializeField] private int outputFrameRate = 60;
     [SerializeField] private bool animatorCurvesOnly = true;
     [SerializeField] private bool includeObjectReferenceCurves = false;
-    [SerializeField] private bool useConstantTangents = true;
+    [SerializeField] private PoseTangentMode poseTangentMode = PoseTangentMode.Constant;
+    [SerializeField] private bool loopPosebank = false;
     [SerializeField] private MissingCurveMode missingCurveMode = MissingCurveMode.UseZero;
     [SerializeField] private Vector2 scrollPosition;
+
+    // ---- 页签与使用说明折叠状态（与 Vpd2Anim 一致） ----
+    [SerializeField] private int tab;
+    [SerializeField] private bool[] folds = new bool[6];
+    private Vector2 helpScroll;
 
     [MenuItem("Tools/Vibing Tools/Pose Bank Builder", priority = 30)]
     private static void OpenWindow()
@@ -42,15 +64,99 @@ public sealed class PoseBankBuilderWindow : EditorWindow
     {
         EditorGUILayout.Space(6f);
         EditorGUILayout.LabelField("VRChat Pose Bank Builder", EditorStyles.boldLabel);
-        EditorGUILayout.HelpBox(
-            "每个源 AnimationClip 只读取本地时间 0 秒的状态，并依照列表顺序写入输出 Clip 的第 0、1、2……帧。",
-            MessageType.Info);
+
+        tab = GUILayout.Toolbar(tab, new[] { "Pose Bank 转换", "使用说明" });
+        EditorGUILayout.Space();
+
+        if (tab == 1)
+        {
+            DrawHelp();
+            return;
+        }
 
         DrawSelectionButtons();
         DrawDropArea();
         DrawClipList();
         DrawSettings();
         DrawBuildButton();
+    }
+
+    // ------------------------------------------------------------------
+    // 使用说明（折叠菜单，与 Vpd2Anim 一致）
+    // ------------------------------------------------------------------
+    private void DrawHelp()
+    {
+        helpScroll = EditorGUILayout.BeginScrollView(helpScroll);
+        HelpFold(0, "快速上手",
+            "1. 在 Project 窗口选中多个 AnimationClip，或直接拖入列表（顺序即帧顺序）\n" +
+            "2. 调整输出设置（一般默认即可，详见下方各折叠项）\n" +
+            "3. 点【生成 Pose Bank AnimationClip】，选择一个保存路径\n" +
+            "4. 把生成的 .anim 放进 BUDDYWORKS Poses Extension 的\n" +
+            "   Custom Poses 槽位（Action Controller → Custom / Custom (Mirror)）\n\n" +
+            "每个源 AnimationClip 只读取本地时间 0 秒（即第 0 帧）的状态，\n" +
+            "并按列表顺序写入输出 Clip 的第 0、1、2……帧。");
+        HelpFold(1, "帧间切线 —— 每个 Pose 之间如何衔接",
+            "● Constant（默认，离散硬切换）\n" +
+            "  相邻帧之间不做插值，逐帧采样时每个 Pose 都是精确的离散值，最像\n" +
+            "  独立的 Pose 快照。注意：动画器采样时间若比关键帧时间偏差一个\n" +
+            "  微小量，整帧会落到前一帧的值（比如卧躺后第一帧站立显示成卧躺）。\n" +
+            "  若出现这种情况，改用 Linear 即可。\n" +
+            "● Linear（与 BUDDYWORKS 官方 Posebank Creator 一致）\n" +
+            "  帧间线性过渡，对采样时间的微小误差不敏感，官方格式即此设置；\n" +
+            "  缺点是逐帧扫描时会看到相邻 Pose 之间的过渡姿态。\n" +
+            "● Auto（Unity 默认样条）\n" +
+            "  帧间平滑曲线插值，适合做连续动画；离散 Pose 库一般不用。");
+        HelpFold(2, "Root 原点 —— 每个单帧动作的原点为什么互不影响",
+            "● 输出 Clip 使用与 BUDDYWORKS 官方一致的设置：\n" +
+            "  keepOriginalPositionY/XZ、keepOriginalOrientation = true，\n" +
+            "  Root 原点曲线逐帧直接应用，不经过 root-motion 的跨帧积分/平滑，\n" +
+            "  因此每个 Pose 的原点只取决于它自己的源动画。\n" +
+            "● 每个单帧动作只读取它自己源动画第 0 帧的 RootT（原点）值。\n" +
+            "● 卧躺等不同高度的动作混用时，站立动作的原点不会被卧躺动作拉低；\n" +
+            "  每个动作都保持自己的高度（如 Vpd2Anim 生成的 RootT.x 高度）。\n" +
+            "● 源动画缺少 Root 原点曲线（RootT./RootQ. 或空路径 m_LocalPosition）\n" +
+            "  时，不会写 0，而是继承列表内第一个含该曲线的 Pose 的值，\n" +
+            "  避免该 Pose 的原点直接沉到地面。");
+        HelpFold(3, "源动画缺少某条曲线时（Use Zero / Abort）",
+            "● Use Zero（默认）\n" +
+            "  浮点曲线写 0、对象引用写 null。很适合 Humanoid Muscle：未记录的\n" +
+            "  肌肉值通常应回到 0。但 Root 原点曲线（RootT./RootQ. 或空路径的\n" +
+            "  m_LocalPosition）缺失时不会写 0，而是继承列表内第一个含该曲线的\n" +
+            "  Pose 的值，避免该 Pose 的原点被拉回地面。\n" +
+            "● Abort\n" +
+            "  立即停止并报告缺少的曲线（路径/类型/属性）。\n" +
+            "  若源动画是 Transform/Generic 动画，建议改用 Abort 检查曲线是否完整。");
+        HelpFold(4, "循环 PoseBank / 输出帧率 / 曲线范围",
+            "● 循环 PoseBank（默认关）\n" +
+            "  在末尾重复第一个 Pose（官方 Loop Posebank 行为），便于无缝循环；\n" +
+            "  离散 Pose 库通常不需要，且会使帧数 +1。\n" +
+            "● 输出帧率（默认 60）\n" +
+            "  第 i 个 Pose 写在 i / FPS 秒处，BUDDYWORKS 官方格式即 60fps。\n" +
+            "● 仅合并 Animator 曲线（默认开）\n" +
+            "  只保留类型为 Animator 的曲线（Humanoid/Muscle 属性），\n" +
+            "  VRChat Pose Bank 推荐；Transform/Generic 曲线会被忽略。\n" +
+            "● 包含对象引用曲线（默认关）\n" +
+            "  例如材质、Sprite 等对象引用。普通 Humanoid Pose 通常不需要。");
+        HelpFold(5, "注意事项",
+            "● 输出 Clip 需作为 BUDDYWORKS Poses Extension 的自定义 Pose Bank\n" +
+            "  使用（Custom Poses → Custom / Custom (Mirror) 槽位）。\n" +
+            "● 源动画只读取第 0 帧（Vpd2Anim 生成的单帧 Clip 正合适）。\n" +
+            "● 生成后请在 Unity 动画预览窗口中逐帧检查每个 Pose。");
+        EditorGUILayout.EndScrollView();
+    }
+
+    private void HelpFold(int i, string title, string body)
+    {
+        folds[i] = EditorGUILayout.Foldout(folds[i], title, true, EditorStyles.foldoutHeader);
+        if (!folds[i])
+        {
+            return;
+        }
+
+        EditorGUI.indentLevel++;
+        EditorGUILayout.LabelField(body, EditorStyles.wordWrappedLabel);
+        EditorGUI.indentLevel--;
+        EditorGUILayout.Space();
     }
 
     private void DrawSelectionButtons()
@@ -192,24 +298,23 @@ public sealed class PoseBankBuilderWindow : EditorWindow
                 "例如材质、Sprite 等对象引用。普通 Humanoid Pose 通常不需要。"),
             includeObjectReferenceCurves);
 
-        useConstantTangents = EditorGUILayout.ToggleLeft(
+        poseTangentMode = (PoseTangentMode)EditorGUILayout.EnumPopup(
             new GUIContent(
-                "使用 Constant 切线",
-                "使相邻 Pose 之间不做连续插值；逐帧采样时更像离散 Pose。"),
-            useConstantTangents);
+                "帧间切线",
+                "Constant（默认）：离散硬切换，逐帧采样最精确；若切换 Pose 时出现显示成前一帧的情况，可改用 Linear。Linear：与 BUDDYWORKS 官方 Posebank Creator 一致，对采样时间误差更稳健。Auto：Unity 默认样条。详见「使用说明」页。"),
+            poseTangentMode);
+
+        loopPosebank = EditorGUILayout.ToggleLeft(
+            new GUIContent(
+                "循环 PoseBank（末尾重复第一个 Pose）",
+                "与 BUDDYWORKS 官方 Posebank Creator 的 Loop Posebank 一致：在末尾追加第一个 Pose，便于做无缝循环。离散 Pose 库通常不需要。"),
+            loopPosebank);
 
         missingCurveMode = (MissingCurveMode)EditorGUILayout.EnumPopup(
             new GUIContent(
                 "源动画缺少某条曲线时",
-                "Use Zero：浮点曲线写 0、对象引用写 null；Abort：立即停止并报告。"),
+                "Use Zero：浮点曲线写 0、对象引用写 null（Root 原点曲线除外，见下）；Abort：立即停止并报告。"),
             missingCurveMode);
-
-        if (missingCurveMode == MissingCurveMode.UseZero)
-        {
-            EditorGUILayout.HelpBox(
-                "Use Zero 很适合 Humanoid Muscle：未记录的肌肉值通常应回到 0。若源动画是 Transform/Generic 动画，建议改用 Abort 检查曲线是否完整。",
-                MessageType.None);
-        }
     }
 
     private void DrawBuildButton()
@@ -276,11 +381,12 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             EditorUtility.DisplayDialog(
                 "Pose Bank 已生成",
                 string.Format(
-                    "Pose 数：{0}\n浮点曲线：{1}\n对象引用曲线：{2}\n缺失曲线采样：{3}\n输出：{4}",
-                    validClips.Count,
+                    "Pose 数：{0}\n浮点曲线：{1}\n对象引用曲线：{2}\n缺失曲线采样：{3}\nRoot 原点继承：{4}\n输出：{5}",
+                    result.PoseCount,
                     result.FloatCurveCount,
                     result.ObjectCurveCount,
                     result.MissingSampleCount,
+                    result.RootInheritSampleCount,
                     path),
                 "确定");
         }
@@ -309,17 +415,41 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             wrapMode = WrapMode.ClampForever
         };
 
+        // 与 BUDDYWORKS 官方 Posebank Creator 相同的 Clip 设置：
+        // keepOriginal* = true 使 Root 原点曲线逐帧直接应用，不经过 root-motion 的
+        // 跨帧积分/平滑管线，保证每个单帧动作的原点只取决于它自己，互不影响。
+        AnimationClipSettings clipSettings = AnimationUtility.GetAnimationClipSettings(output);
+        clipSettings.loopTime = false;
+        clipSettings.mirror = false;
+        clipSettings.loopBlendOrientation = true;
+        clipSettings.keepOriginalOrientation = true;
+        clipSettings.orientationOffsetY = 0f;
+        clipSettings.loopBlendPositionY = true;
+        clipSettings.keepOriginalPositionY = true;
+        clipSettings.loopBlendPositionXZ = true;
+        clipSettings.keepOriginalPositionXZ = true;
+        clipSettings.level = 0f;
+        AnimationUtility.SetAnimationClipSettings(output, clipSettings);
+
+        List<AnimationClip> processClips = new List<AnimationClip>(clips);
+        if (loopPosebank && processClips.Count > 0 && processClips[0] != null)
+        {
+            processClips.Add(processClips[0]);
+        }
+
+        int poseCount = processClips.Count;
+
         List<Dictionary<BindingKey, AnimationCurve>> sourceFloatCurves =
-            new List<Dictionary<BindingKey, AnimationCurve>>(clips.Count);
+            new List<Dictionary<BindingKey, AnimationCurve>>(poseCount);
         List<Dictionary<BindingKey, ObjectReferenceKeyframe[]>> sourceObjectCurves =
-            new List<Dictionary<BindingKey, ObjectReferenceKeyframe[]>>(clips.Count);
+            new List<Dictionary<BindingKey, ObjectReferenceKeyframe[]>>(poseCount);
 
         Dictionary<BindingKey, EditorCurveBinding> floatBindingUnion =
             new Dictionary<BindingKey, EditorCurveBinding>();
         Dictionary<BindingKey, EditorCurveBinding> objectBindingUnion =
             new Dictionary<BindingKey, EditorCurveBinding>();
 
-        foreach (AnimationClip clip in clips)
+        foreach (AnimationClip clip in processClips)
         {
             Dictionary<BindingKey, AnimationCurve> floatMap =
                 new Dictionary<BindingKey, AnimationCurve>();
@@ -390,26 +520,50 @@ public sealed class PoseBankBuilderWindow : EditorWindow
         orderedObjectBindings.Sort(CompareBindings);
 
         int missingSampleCount = 0;
+        int rootInheritSampleCount = 0;
 
         foreach (EditorCurveBinding binding in orderedFloatBindings)
         {
             BindingKey key = new BindingKey(binding);
-            Keyframe[] outputKeys = new Keyframe[clips.Count];
+            Keyframe[] outputKeys = new Keyframe[poseCount];
+            bool isRootBinding = IsRootOriginBinding(binding);
+            float? inheritedRootValue = null;
 
-            for (int poseIndex = 0; poseIndex < clips.Count; poseIndex++)
+            // 当该 Pose 缺少 Root 原点曲线时，先找列表内第一个含该曲线的 Pose，
+            // 用它的值作为原点继承值（而不是写 0 把原点拉回地面）。
+            if (isRootBinding && missingCurveMode == MissingCurveMode.UseZero)
+            {
+                for (int k = 0; k < poseCount; k++)
+                {
+                    AnimationCurve candidate;
+                    if (sourceFloatCurves[k].TryGetValue(key, out candidate) && candidate != null)
+                    {
+                        inheritedRootValue = EvaluateFirstFrame(candidate);
+                        break;
+                    }
+                }
+            }
+
+            for (int poseIndex = 0; poseIndex < poseCount; poseIndex++)
             {
                 float value;
                 AnimationCurve sourceCurve;
 
                 if (sourceFloatCurves[poseIndex].TryGetValue(key, out sourceCurve))
                 {
-                    // AnimationCurve.Evaluate(0) 即源 Clip 本地时间 0 秒，也就是第 0 帧。
-                    value = sourceCurve.Evaluate(0f);
+                    // 与官方实现一致：取源 Clip 首个关键帧的值（Vpd2Anim 生成的
+                    // 单帧 Clip 关键帧就在时间 0，等价于 Evaluate(0)）。
+                    value = EvaluateFirstFrame(sourceCurve);
+                }
+                else if (isRootBinding && inheritedRootValue.HasValue)
+                {
+                    rootInheritSampleCount++;
+                    value = inheritedRootValue.Value;
                 }
                 else
                 {
                     missingSampleCount++;
-                    HandleMissingCurve(clips[poseIndex], binding);
+                    HandleMissingCurve(processClips[poseIndex], binding);
                     value = 0f;
                 }
 
@@ -418,10 +572,7 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             }
 
             AnimationCurve outputCurve = new AnimationCurve(outputKeys);
-            if (useConstantTangents)
-            {
-                SetConstantTangents(outputCurve);
-            }
+            ApplyTangentMode(outputCurve);
 
             AnimationUtility.SetEditorCurve(output, binding, outputCurve);
         }
@@ -429,9 +580,9 @@ public sealed class PoseBankBuilderWindow : EditorWindow
         foreach (EditorCurveBinding binding in orderedObjectBindings)
         {
             BindingKey key = new BindingKey(binding);
-            ObjectReferenceKeyframe[] outputKeys = new ObjectReferenceKeyframe[clips.Count];
+            ObjectReferenceKeyframe[] outputKeys = new ObjectReferenceKeyframe[poseCount];
 
-            for (int poseIndex = 0; poseIndex < clips.Count; poseIndex++)
+            for (int poseIndex = 0; poseIndex < poseCount; poseIndex++)
             {
                 Object value;
                 ObjectReferenceKeyframe[] sourceKeys;
@@ -443,7 +594,7 @@ public sealed class PoseBankBuilderWindow : EditorWindow
                 else
                 {
                     missingSampleCount++;
-                    HandleMissingCurve(clips[poseIndex], binding);
+                    HandleMissingCurve(processClips[poseIndex], binding);
                     value = null;
                 }
 
@@ -459,9 +610,11 @@ public sealed class PoseBankBuilderWindow : EditorWindow
 
         return new BuildResult(
             output,
+            poseCount,
             orderedFloatBindings.Count,
             orderedObjectBindings.Count,
-            missingSampleCount);
+            missingSampleCount,
+            rootInheritSampleCount);
     }
 
     private bool ShouldIncludeBinding(EditorCurveBinding binding)
@@ -508,14 +661,61 @@ public sealed class PoseBankBuilderWindow : EditorWindow
         return value;
     }
 
-    private static void SetConstantTangents(AnimationCurve curve)
+    private static float EvaluateFirstFrame(AnimationCurve curve)
     {
+        if (curve == null || curve.length == 0)
+        {
+            return 0f;
+        }
+
+        return curve.keys[0].value;
+    }
+
+    private static bool IsRootOriginBinding(EditorCurveBinding binding)
+    {
+        if (binding.type == typeof(Animator))
+        {
+            return binding.propertyName.StartsWith("RootT.", StringComparison.Ordinal)
+                   || binding.propertyName.StartsWith("RootQ.", StringComparison.Ordinal);
+        }
+
+        // Generic/Transform 动画：空路径上的 m_LocalPosition 即根骨骼（原点）。
+        return string.IsNullOrEmpty(binding.path)
+               && binding.propertyName.StartsWith("m_LocalPosition.", StringComparison.Ordinal);
+    }
+
+    private void ApplyTangentMode(AnimationCurve curve)
+    {
+        if (curve == null)
+        {
+            return;
+        }
+
         for (int i = 0; i < curve.length; i++)
         {
-            AnimationUtility.SetKeyLeftTangentMode(
-                curve, i, AnimationUtility.TangentMode.Constant);
-            AnimationUtility.SetKeyRightTangentMode(
-                curve, i, AnimationUtility.TangentMode.Constant);
+            switch (poseTangentMode)
+            {
+                case PoseTangentMode.Linear:
+                    AnimationUtility.SetKeyLeftTangentMode(
+                        curve, i, AnimationUtility.TangentMode.Linear);
+                    AnimationUtility.SetKeyRightTangentMode(
+                        curve, i, AnimationUtility.TangentMode.Linear);
+                    break;
+
+                case PoseTangentMode.Constant:
+                    AnimationUtility.SetKeyLeftTangentMode(
+                        curve, i, AnimationUtility.TangentMode.Constant);
+                    AnimationUtility.SetKeyRightTangentMode(
+                        curve, i, AnimationUtility.TangentMode.Constant);
+                    break;
+
+                default:
+                    AnimationUtility.SetKeyLeftTangentMode(
+                        curve, i, AnimationUtility.TangentMode.Auto);
+                    AnimationUtility.SetKeyRightTangentMode(
+                        curve, i, AnimationUtility.TangentMode.Auto);
+                    break;
+            }
         }
     }
 
@@ -586,20 +786,26 @@ public sealed class PoseBankBuilderWindow : EditorWindow
     private sealed class BuildResult
     {
         public readonly AnimationClip Clip;
+        public readonly int PoseCount;
         public readonly int FloatCurveCount;
         public readonly int ObjectCurveCount;
         public readonly int MissingSampleCount;
+        public readonly int RootInheritSampleCount;
 
         public BuildResult(
             AnimationClip clip,
+            int poseCount,
             int floatCurveCount,
             int objectCurveCount,
-            int missingSampleCount)
+            int missingSampleCount,
+            int rootInheritSampleCount)
         {
             Clip = clip;
+            PoseCount = poseCount;
             FloatCurveCount = floatCurveCount;
             ObjectCurveCount = objectCurveCount;
             MissingSampleCount = missingSampleCount;
+            RootInheritSampleCount = rootInheritSampleCount;
         }
     }
 }
