@@ -103,7 +103,9 @@ namespace VpdToAnim
     /// Core retarget: builds MMD world-space pose deltas from the VPD (using the
     /// reference skeleton hierarchy), converts them to Unity space, and applies
     /// them on top of the avatar rest pose with optional rest-direction alignment.
-    /// Legs whose 足ＩＫ bone is posed in the VPD are solved with a two-bone IK pass.
+    /// Legs whose 足ＩＫ bone is posed in the VPD are solved with a two-bone IK pass;
+    /// an optional per-side muscle-range correction can then redistribute out-of-range
+    /// leg twist (which would make the foot flip on playback) up the shin/thigh chain.
     /// </summary>
     public class VpdRetargeter
     {
@@ -112,6 +114,7 @@ namespace VpdToAnim
         public AlignMode Align = AlignMode.Arms;
         public bool Fingers = true;
         public bool Eyes;
+        public TwistCorrectMode TwistCorrection = TwistCorrectMode.None;   // per-leg foot flip fix
         public float ManualScale;                 // 0 = automatic (hip-height ratio)
 
         public float UsedScale { get; private set; } = 1f;
@@ -317,6 +320,31 @@ namespace VpdToAnim
             foreach (var leg in _ikLegs)
                 if (leg != null && leg.Active) SolveLegIk(rig, leg);
 
+            // Muscle-range correction for IK-driven feet (opt-in, per side).
+            // The ankle's world orientation is forced by the 足ＩＫ bone, so it is
+            // always correct in the scene; but the twist may be parked in the
+            // ankle's LOCAL rotation, where HumanPoseHandler can extract an
+            // out-of-range "Foot Twist" muscle. Muscles get clamped on playback,
+            // so the foot then snaps/flips in- or outward even though the preview
+            // was fine. Roll the twist up the chain (shin/thigh) of the selected
+            // leg(s) until the REAL muscle values of this avatar are back in range.
+            if (TwistCorrection != TwistCorrectMode.None && rig.Anim.isHuman && rig.Anim.avatar != null)
+            {
+                using (var handler = new HumanPoseHandler(rig.Anim.avatar, rig.Root))
+                {
+                    var hp = new HumanPose();
+                    for (int s = 0; s < 2; s++)
+                    {
+                        var leg = _ikLegs[s];
+                        if (leg == null || !leg.Active) continue;
+                        bool leftSide = s == 0;
+                        if (TwistCorrection == TwistCorrectMode.LeftOnly && !leftSide) continue;
+                        if (TwistCorrection == TwistCorrectMode.RightOnly && leftSide) continue;
+                        CorrectLegTwist(rig, handler, ref hp, leg);
+                    }
+                }
+            }
+
             return hips;
         }
 
@@ -351,6 +379,116 @@ namespace VpdToAnim
 
             // ankle orientation comes from the 足ＩＫ bone's world rotation
             SetWorldRot(ankle, leg.AnkleDelta * rig.RestWorldRot[ankle]);
+        }
+
+        /// <summary>
+        /// Greedy twist redistribution driven by the avatar's REAL muscle values:
+        /// while any twist muscle of the leg (foot / lower leg / upper leg) is out
+        /// of range, roll the shin or the thigh about its own bone axis by a small
+        /// step in whichever direction reduces the worst muscle. Positions and the
+        /// ankle's final world orientation are restored after every roll, so only
+        /// the twist distribution along the chain changes.
+        /// </summary>
+        void CorrectLegTwist(AvatarRig rig, HumanPoseHandler handler, ref HumanPose hp, IkLeg leg)
+        {
+            int footI = TwistMuscleIndex(leg.Ankle);
+            int shinI = TwistMuscleIndex(leg.Knee);
+            int thighI = TwistMuscleIndex(leg.Upper);
+            if (footI < 0 || shinI < 0 || thighI < 0) return;
+
+            var ankle = rig.Bone[leg.Ankle];
+            Vector3 T = rig.RestWorldPos[rig.Root] + rig.RestWorldRot[rig.Root] * leg.TargetLocal;
+            var ankleTargetWorld = leg.AnkleDelta * rig.RestWorldRot[ankle];
+
+            const float Step = 15f, Goal = 0.95f;
+            float score = LegTwistScore(handler, ref hp, footI, shinI, thighI);
+            for (int iter = 0; iter < 20 && score > Goal; iter++)
+            {
+                float bestScore = score, bestSign = 0f;
+                bool bestShin = false;
+                for (int j = 0; j < 2; j++)
+                {
+                    bool shin = j == 0;
+                    for (int sgn = -1; sgn <= 1; sgn += 2)
+                    {
+                        var snap = SnapshotLeg(rig, leg);
+                        RollLegJoint(rig, leg, shin, sgn * Step, T, ankleTargetWorld);
+                        float sc = LegTwistScore(handler, ref hp, footI, shinI, thighI);
+                        RestoreLeg(snap, rig, leg);
+                        if (sc < bestScore - 1e-4f) { bestScore = sc; bestShin = shin; bestSign = sgn; }
+                    }
+                }
+                if (bestSign == 0f) break;      // no improving roll: best effort reached
+                RollLegJoint(rig, leg, bestShin, bestSign * Step, T, ankleTargetWorld);
+                score = bestScore;
+            }
+        }
+
+        /// <summary>Rolls the shin (or thigh) about its bone axis, then restores the
+        /// ankle position (thigh roll moves it) and the ankle's world orientation.</summary>
+        static void RollLegJoint(AvatarRig rig, IkLeg leg, bool shin, float angleDeg,
+            Vector3 target, Quaternion ankleTargetWorld)
+        {
+            var upper = rig.Bone[leg.Upper];
+            var knee = rig.Bone[leg.Knee];
+            var ankle = rig.Bone[leg.Ankle];
+            if (shin)
+            {
+                var axis = ankle.position - knee.position;
+                if (axis.sqrMagnitude < 1e-10f) return;
+                SetWorldRot(knee, Quaternion.AngleAxis(angleDeg, axis.normalized) * knee.rotation);
+            }
+            else
+            {
+                var axis = knee.position - upper.position;
+                if (axis.sqrMagnitude < 1e-10f) return;
+                SetWorldRot(upper, Quaternion.AngleAxis(angleDeg, axis.normalized) * upper.rotation);
+                // re-place the ankle on the IK target (the roll moved it)
+                var from = ankle.position - knee.position;
+                var to = target - knee.position;
+                if (from.sqrMagnitude > 1e-10f && to.sqrMagnitude > 1e-10f)
+                    SetWorldRot(knee, Quaternion.FromToRotation(from, to) * knee.rotation);
+            }
+            SetWorldRot(ankle, ankleTargetWorld);
+        }
+
+        static (Quaternion u, Quaternion k, Quaternion a) SnapshotLeg(AvatarRig rig, IkLeg leg) =>
+            (rig.Bone[leg.Upper].localRotation, rig.Bone[leg.Knee].localRotation,
+             rig.Bone[leg.Ankle].localRotation);
+
+        static void RestoreLeg((Quaternion u, Quaternion k, Quaternion a) snap, AvatarRig rig, IkLeg leg)
+        {
+            rig.Bone[leg.Upper].localRotation = snap.u;
+            rig.Bone[leg.Knee].localRotation = snap.k;
+            rig.Bone[leg.Ankle].localRotation = snap.a;
+        }
+
+        static float LegTwistScore(HumanPoseHandler handler, ref HumanPose hp, int footI, int shinI, int thighI)
+        {
+            handler.GetHumanPose(ref hp);
+            var m = hp.muscles;
+            return Mathf.Max(Mathf.Abs(m[footI]), Mathf.Max(Mathf.Abs(m[shinI]), Mathf.Abs(m[thighI])));
+        }
+
+        static readonly Dictionary<string, int> _muscleIndex = new Dictionary<string, int>();
+
+        static int TwistMuscleIndex(HumanBodyBones bone)
+        {
+            string label;
+            switch (bone)
+            {
+                case HumanBodyBones.LeftFoot:       label = "Left Foot Twist In-Out"; break;
+                case HumanBodyBones.RightFoot:      label = "Right Foot Twist In-Out"; break;
+                case HumanBodyBones.LeftLowerLeg:   label = "Left Lower Leg Twist In-Out"; break;
+                case HumanBodyBones.RightLowerLeg:  label = "Right Lower Leg Twist In-Out"; break;
+                case HumanBodyBones.LeftUpperLeg:   label = "Left Upper Leg Twist In-Out"; break;
+                case HumanBodyBones.RightUpperLeg:  label = "Right Upper Leg Twist In-Out"; break;
+                default: return -1;
+            }
+            if (_muscleIndex.Count == 0)
+                for (int i = 0; i < HumanTrait.MuscleCount; i++)
+                    _muscleIndex[HumanTrait.MuscleName[i]] = i;
+            return _muscleIndex.TryGetValue(label, out var idx) ? idx : -1;
         }
 
         static void SetWorldRot(Transform t, Quaternion worldRot)

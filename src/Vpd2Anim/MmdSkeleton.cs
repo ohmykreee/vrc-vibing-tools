@@ -11,6 +11,15 @@ namespace VpdToAnim
         All  = 2,   // align arms + legs + spine chains
     }
 
+    /// <summary>Which IK-driven legs get the muscle-range twist correction.</summary>
+    public enum TwistCorrectMode
+    {
+        None      = 0,   // no correction: raw IK solve result
+        LeftOnly  = 1,   // correct the left leg only
+        RightOnly = 2,   // correct the right leg only
+        Both      = 3,   // correct both legs
+    }
+
     /// <summary>
     /// MMD → Unity coordinate conversion.
     ///

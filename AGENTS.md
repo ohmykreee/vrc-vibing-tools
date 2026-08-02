@@ -3,7 +3,7 @@
 ## 项目结构
 
 - `src/<工具名>/`：各 Unity 编辑器工具的 C# 源码（.cs + 对应 .meta），发布时拷入用户工程的 `Assets/Editor`。
-- `unity/`：配套 Unity 工程。目标 Unity 版本以 `unity/ProjectSettings/ProjectVersion.txt` 的 `m_EditorVersion` 为准。
+- `unity/`：非完整 Unity 工程，仅为了在 CI/CD 中生成 UnityPackage 用的最小项目骨架。目标 Unity 版本以 `unity/ProjectSettings/ProjectVersion.txt` 的 `m_EditorVersion` 为准。
 - `ref-dlls/`：本地编译检查用的 Unity 托管程序集（已在 .gitignore 中，不入库）。
 
 ## 无 GUI 环境下的编译检查

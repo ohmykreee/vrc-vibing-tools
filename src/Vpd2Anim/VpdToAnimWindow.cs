@@ -47,6 +47,7 @@ namespace VpdToAnim
         [SerializeField] bool _fingers = true;
         [SerializeField] bool _eyes;
         [SerializeField] bool _extraBones;
+        [SerializeField] TwistCorrectMode _twistCorrectMode = TwistCorrectMode.None;
         [SerializeField] AlignMode _align = AlignMode.Arms;
         [SerializeField] OutputMode _mode = OutputMode.HumanoidMuscle;
         [SerializeField] float _manualScale;
@@ -71,6 +72,13 @@ namespace VpdToAnim
             new GUIContent("无（avatar 绑定姿势本身是 A-pose 时选）"),
             new GUIContent("仅手臂（默认，推荐）"),
             new GUIContent("全部（手臂+腿+脊柱）"),
+        };
+        static readonly GUIContent[] TwistCorrectLabels =
+        {
+            new GUIContent("无（默认，不做矫正）"),
+            new GUIContent("仅左脚"),
+            new GUIContent("仅右脚"),
+            new GUIContent("双脚"),
         };
 
         // ==================================================================
@@ -207,6 +215,10 @@ namespace VpdToAnim
             _eyes = EditorGUILayout.Toggle("眼睛", _eyes);
             _extraBones = EditorGUILayout.Toggle(new GUIContent("额外骨骼（按名字匹配）",
                 "为 avatar 中与 VPD 骨骼完全同名的非 humanoid 骨骼（MMD 系模型的头发/裙子等）写 transform 曲线。"), _extraBones);
+            _twistCorrectMode = (TwistCorrectMode)EditorGUILayout.Popup(new GUIContent("腿部扭转矫正",
+                "足ＩＫ 驱动的腿若脚踝扭转超出该 avatar 的 muscle 范围，播放时该脚会内外翻转。\n" +
+                "矫正会把多余扭转分配到小腿/大腿上。默认「无」；某只脚翻转时，选对应侧重新转换即可。"),
+                (int)_twistCorrectMode, TwistCorrectLabels);
             _manualScale = EditorGUILayout.FloatField(new GUIContent("Hip 缩放（0 = 自动）",
                 "髋部位移换算比例（米 / MMD 单位）。0 = 按 avatar 髋高 ÷ MMD 髋高自动计算。"), _manualScale);
         }
@@ -258,12 +270,15 @@ namespace VpdToAnim
                 "● 仅手臂（默认，推荐）：只把手臂链对齐到 MMD 的 A-pose 方向，最自然。\n" +
                 "● 无：不做对齐。仅当 avatar 绑定 rest 本身就是 A-pose 时选。\n" +
                 "● 全部：手臂+腿+脊柱全对齐。个别模型可能更准也可能不自然，以预览为准。");
-            HelpFold(3, "镜像 / 手指 / 眼睛 / 额外骨骼",
+            HelpFold(3, "镜像 / 手指 / 眼睛 / 额外骨骼 / 腿部扭转矫正",
                 "● 镜像（左右互换）：整个姿势左右翻转（左手↔右手、左腿↔右腿）。\n" +
                 "● 手指（默认开）：转换手指弯曲，建议保持开启。\n" +
                 "● 眼睛（默认关）：转换眼球方向。VRChat 眼球一般由 SDK 眼动控制，建议关。\n" +
                 "● 额外骨骼（默认关）：avatar 中与 VPD 骨骼完全同名的非 humanoid 骨骼\n" +
-                "  （MMD 系模型的头发/裙子）也写曲线。一般保持关闭。");
+                "  （MMD 系模型的头发/裙子）也写曲线。一般保持关闭。\n" +
+                "● 腿部扭转矫正（默认无）：足ＩＫ 腿的脚踝扭转超出 muscle 范围时，把多余\n" +
+                "  扭转分配到小腿/大腿，避免播放时该脚内外翻转。分「仅左脚/仅右脚/双脚」；\n" +
+                "  转换后若某只脚翻转，选对应侧重新转换即可（只影响所选侧）。");
             HelpFold(4, "Hip 缩放（0 = 自动）",
                 "髋部位移的换算比例（米 / MMD 单位）。\n" +
                 "0（默认）= 自动：按「avatar 髋部高度 ÷ MMD 髋部高度」计算，绝大多数情况正确。\n" +
@@ -272,6 +287,8 @@ namespace VpdToAnim
                 "很多 VPD 里腿部 FK 骨骼（足/ひざ/足首）是单位旋转，腿部姿势由\n" +
                 "「足ＩＫ」骨骼（位移+旋转）驱动。本工具检测到非单位旋转的足ＩＫ 时\n" +
                 "会自动对那条腿做两腿 IK 解算（含脚踝朝向）；FK 腿则保持原样。\n" +
+                "若某只脚转换后在播放时内外翻转（脚踝扭转超出 muscle 范围），\n" +
+                "可在「腿部扭转矫正」中选择对应侧重新转换进行修正。\n" +
                 "转换报告中会标注哪条腿走了 IK。");
             HelpFold(6, "恢复初始姿势 / 注意事项",
                 "● 转换结束后场景 avatar 一定会自动恢复原姿势，不会残留。\n" +
@@ -418,7 +435,10 @@ namespace VpdToAnim
         VpdRetargeter BuildRetargeter(AvatarRig rig, VpdPose pose)
         {
             var rt = new VpdRetargeter
-            { Pose = pose, Mirror = _mirror, Align = _align, Fingers = _fingers, Eyes = _eyes, ManualScale = _manualScale };
+            {
+                Pose = pose, Mirror = _mirror, Align = _align, Fingers = _fingers, Eyes = _eyes,
+                TwistCorrection = _twistCorrectMode, ManualScale = _manualScale
+            };
             rt.Prepare(rig);
             return rt;
         }
