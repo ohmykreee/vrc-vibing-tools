@@ -18,7 +18,9 @@ using Object = UnityEngine.Object;
 /// - Clip 设置 keepOriginalPositionY/XZ = true 等（官方一致），使 Root 原点曲线
 ///   逐帧直接应用、不经过 root-motion 跨帧积分，每个单帧动作的原点只取决于
 ///   它自己的源动画；
-/// - 源动画缺少 Root 原点曲线时继承列表内第一个可用值，避免原点被拉回地面。
+/// - 源动画缺少 Root 原点曲线时继承列表内第一个可用值，避免原点被拉回地面；
+/// - 原点矫正（默认开）：root 水平偏移超过阈值的动作（如奔跑/行走）移回原点，
+///   保留各自高度。
 ///
 /// 请将本文件放在 Assets/Editor/ 目录下。
 /// </summary>
@@ -42,6 +44,8 @@ public sealed class PoseBankBuilderWindow : EditorWindow
     [SerializeField] private bool animatorCurvesOnly = true;
     [SerializeField] private bool includeObjectReferenceCurves = false;
     [SerializeField] private PoseTangentMode poseTangentMode = PoseTangentMode.Constant;
+    [SerializeField] private bool originCorrection = true;
+    [SerializeField] private float originCorrectionThreshold = 0.1f;
     [SerializeField] private bool loopPosebank = false;
     [SerializeField] private MissingCurveMode missingCurveMode = MissingCurveMode.UseZero;
     [SerializeField] private Vector2 scrollPosition;
@@ -113,10 +117,16 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             "  因此每个 Pose 的原点只取决于它自己的源动画。\n" +
             "● 每个单帧动作只读取它自己源动画第 0 帧的 RootT（原点）值。\n" +
             "● 卧躺等不同高度的动作混用时，站立动作的原点不会被卧躺动作拉低；\n" +
-            "  每个动作都保持自己的高度（如 Vpd2Anim 生成的 RootT.x 高度）。\n" +
+            "  每个动作都保持自己的高度（如 Vpd2Anim 生成的 RootT.y 高度）。\n" +
             "● 源动画缺少 Root 原点曲线（RootT./RootQ. 或空路径 m_LocalPosition）\n" +
             "  时，不会写 0，而是继承列表内第一个含该曲线的 Pose 的值，\n" +
-            "  避免该 Pose 的原点直接沉到地面。");
+            "  避免该 Pose 的原点直接沉到地面。\n" +
+            "● 原点矫正（默认开）\n" +
+            "  源动画（如奔跑/行走动作）的 root 相对原点可能有较大的水平偏移\n" +
+            "  （前后/左右）。生成时会把水平偏移超过阈值（默认 0.1 米，可在\n" +
+            "  转换页调整）的动作移回原点：只归零水平分量（RootT.x/RootT.z，\n" +
+            "  Unity 中即 X/Z 方向），保留高度（RootT.y，Unity 中即 Y 轴），\n" +
+            "  因此站立/卧躺等姿势不受影响。");
         HelpFold(3, "源动画缺少某条曲线时（Use Zero / Abort）",
             "● Use Zero（默认）\n" +
             "  浮点曲线写 0、对象引用写 null。很适合 Humanoid Muscle：未记录的\n" +
@@ -304,6 +314,20 @@ public sealed class PoseBankBuilderWindow : EditorWindow
                 "Constant（默认）：离散硬切换，逐帧采样最精确；若切换 Pose 时出现显示成前一帧的情况，可改用 Linear。Linear：与 BUDDYWORKS 官方 Posebank Creator 一致，对采样时间误差更稳健。Auto：Unity 默认样条。详见「使用说明」页。"),
             poseTangentMode);
 
+        originCorrection = EditorGUILayout.ToggleLeft(
+            new GUIContent(
+                "原点矫正（将偏移过大的动作移回原点）",
+                "源动画的 root 相对原点水平偏移过大时（例如奔跑/行走动作），把该动作的水平偏移归零、移回原点，保留各自高度。"),
+            originCorrection);
+
+        if (originCorrection)
+        {
+            originCorrectionThreshold = EditorGUILayout.FloatField(
+                new GUIContent("矫正阈值（米）", "水平偏移（前后/左右）超过该值即移回原点。"),
+                originCorrectionThreshold);
+            originCorrectionThreshold = Mathf.Max(0f, originCorrectionThreshold);
+        }
+
         loopPosebank = EditorGUILayout.ToggleLeft(
             new GUIContent(
                 "循环 PoseBank（末尾重复第一个 Pose）",
@@ -381,12 +405,13 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             EditorUtility.DisplayDialog(
                 "Pose Bank 已生成",
                 string.Format(
-                    "Pose 数：{0}\n浮点曲线：{1}\n对象引用曲线：{2}\n缺失曲线采样：{3}\nRoot 原点继承：{4}\n输出：{5}",
+                    "Pose 数：{0}\n浮点曲线：{1}\n对象引用曲线：{2}\n缺失曲线采样：{3}\nRoot 原点继承：{4}\n原点矫正：{5}\n输出：{6}",
                     result.PoseCount,
                     result.FloatCurveCount,
                     result.ObjectCurveCount,
                     result.MissingSampleCount,
                     result.RootInheritSampleCount,
+                    result.OriginCorrectedPoseCount,
                     path),
                 "确定");
         }
@@ -522,6 +547,41 @@ public sealed class PoseBankBuilderWindow : EditorWindow
         int missingSampleCount = 0;
         int rootInheritSampleCount = 0;
 
+        // ---- 原点矫正：水平偏移过大的动作移回原点（保留高度） ----
+        bool[] originCorrectedPoses = null;
+        int originCorrectedPoseCount = 0;
+        if (originCorrection)
+        {
+            originCorrectedPoses = new bool[poseCount];
+            float thresholdSq = originCorrectionThreshold * originCorrectionThreshold;
+            for (int poseIndex = 0; poseIndex < poseCount; poseIndex++)
+            {
+                float horizontalSq = 0f;
+                foreach (KeyValuePair<BindingKey, AnimationCurve> kvp in sourceFloatCurves[poseIndex])
+                {
+                    EditorCurveBinding binding;
+                    if (!floatBindingUnion.TryGetValue(kvp.Key, out binding))
+                    {
+                        continue;
+                    }
+
+                    if (!IsHorizontalRootBinding(binding))
+                    {
+                        continue;
+                    }
+
+                    float v = EvaluateFirstFrame(kvp.Value);
+                    horizontalSq += v * v;
+                }
+
+                if (horizontalSq > thresholdSq)
+                {
+                    originCorrectedPoses[poseIndex] = true;
+                    originCorrectedPoseCount++;
+                }
+            }
+        }
+
         foreach (EditorCurveBinding binding in orderedFloatBindings)
         {
             BindingKey key = new BindingKey(binding);
@@ -564,6 +624,14 @@ public sealed class PoseBankBuilderWindow : EditorWindow
                 {
                     missingSampleCount++;
                     HandleMissingCurve(processClips[poseIndex], binding);
+                    value = 0f;
+                }
+
+                // 原点矫正：该动作水平偏移过大时，水平 Root 分量归零。
+                if (originCorrectedPoses != null
+                    && originCorrectedPoses[poseIndex]
+                    && IsHorizontalRootBinding(binding))
+                {
                     value = 0f;
                 }
 
@@ -614,7 +682,8 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             orderedFloatBindings.Count,
             orderedObjectBindings.Count,
             missingSampleCount,
-            rootInheritSampleCount);
+            rootInheritSampleCount,
+            originCorrectedPoseCount);
     }
 
     private bool ShouldIncludeBinding(EditorCurveBinding binding)
@@ -682,6 +751,24 @@ public sealed class PoseBankBuilderWindow : EditorWindow
         // Generic/Transform 动画：空路径上的 m_LocalPosition 即根骨骼（原点）。
         return string.IsNullOrEmpty(binding.path)
                && binding.propertyName.StartsWith("m_LocalPosition.", StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 水平方向（非高度）的 Root 分量。本工具面向的 VRChat/Unity 空间中
+    /// X = 左右、Z = 前后（水平），Y = 高度（上下）——肌肉空间与 Generic
+    /// 层级空间均为这一约定。原点矫正只归零这些水平分量，保留高度 Y。
+    /// </summary>
+    private static bool IsHorizontalRootBinding(EditorCurveBinding binding)
+    {
+        if (binding.type == typeof(Animator))
+        {
+            return binding.propertyName == "RootT.x"
+                   || binding.propertyName == "RootT.z";
+        }
+
+        return string.IsNullOrEmpty(binding.path)
+               && (binding.propertyName == "m_LocalPosition.x"
+                   || binding.propertyName == "m_LocalPosition.z");
     }
 
     private void ApplyTangentMode(AnimationCurve curve)
@@ -791,6 +878,7 @@ public sealed class PoseBankBuilderWindow : EditorWindow
         public readonly int ObjectCurveCount;
         public readonly int MissingSampleCount;
         public readonly int RootInheritSampleCount;
+        public readonly int OriginCorrectedPoseCount;
 
         public BuildResult(
             AnimationClip clip,
@@ -798,7 +886,8 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             int floatCurveCount,
             int objectCurveCount,
             int missingSampleCount,
-            int rootInheritSampleCount)
+            int rootInheritSampleCount,
+            int originCorrectedPoseCount)
         {
             Clip = clip;
             PoseCount = poseCount;
@@ -806,6 +895,7 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             ObjectCurveCount = objectCurveCount;
             MissingSampleCount = missingSampleCount;
             RootInheritSampleCount = rootInheritSampleCount;
+            OriginCorrectedPoseCount = originCorrectedPoseCount;
         }
     }
 }
