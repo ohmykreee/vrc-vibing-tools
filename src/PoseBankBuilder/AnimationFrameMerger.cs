@@ -46,7 +46,7 @@ public sealed class PoseBankBuilderWindow : EditorWindow
     [SerializeField] private PoseTangentMode poseTangentMode = PoseTangentMode.Constant;
     [SerializeField] private bool originCorrection = true;
     [SerializeField] private float originCorrectionThreshold = 0.1f;
-    [SerializeField] private bool loopPosebank = false;
+    [SerializeField] private bool loopPosebank = true;
     [SerializeField] private MissingCurveMode missingCurveMode = MissingCurveMode.UseZero;
     [SerializeField] private Vector2 scrollPosition;
 
@@ -137,9 +137,9 @@ public sealed class PoseBankBuilderWindow : EditorWindow
             "  立即停止并报告缺少的曲线（路径/类型/属性）。\n" +
             "  若源动画是 Transform/Generic 动画，建议改用 Abort 检查曲线是否完整。");
         HelpFold(4, "循环 PoseBank / 输出帧率 / 曲线范围",
-            "● 循环 PoseBank（默认关）\n" +
+            "● 循环 PoseBank（默认开 ）\n" +
             "  在末尾重复第一个 Pose（官方 Loop Posebank 行为），便于无缝循环；\n" +
-            "  离散 Pose 库通常不需要，且会使帧数 +1。\n" +
+            "  建议开启，若不开启容易丢失最后一个动作（输出动作会+1）\n" +
             "● 输出帧率（默认 60）\n" +
             "  第 i 个 Pose 写在 i / FPS 秒处，BUDDYWORKS 官方格式即 60fps。\n" +
             "● 仅合并 Animator 曲线（默认开）\n" +
@@ -331,7 +331,7 @@ public sealed class PoseBankBuilderWindow : EditorWindow
         loopPosebank = EditorGUILayout.ToggleLeft(
             new GUIContent(
                 "循环 PoseBank（末尾重复第一个 Pose）",
-                "与 BUDDYWORKS 官方 Posebank Creator 的 Loop Posebank 一致：在末尾追加第一个 Pose，便于做无缝循环。离散 Pose 库通常不需要。"),
+                "在末尾追加第一个 Pose，防止最后一个动作丢失。"),
             loopPosebank);
 
         missingCurveMode = (MissingCurveMode)EditorGUILayout.EnumPopup(
