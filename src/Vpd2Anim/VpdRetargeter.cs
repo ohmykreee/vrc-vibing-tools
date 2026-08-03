@@ -103,9 +103,14 @@ namespace VpdToAnim
     /// Core retarget: builds MMD world-space pose deltas from the VPD (using the
     /// reference skeleton hierarchy), converts them to Unity space, and applies
     /// them on top of the avatar rest pose with optional rest-direction alignment.
-    /// Legs whose 足ＩＫ bone is posed in the VPD are solved with a two-bone IK pass;
-    /// an optional per-side muscle-range correction can then redistribute out-of-range
-    /// leg twist (which would make the foot flip on playback) up the shin/thigh chain.
+    /// Legs whose 足ＩＫ bone is posed in the VPD are solved with a two-bone IK pass
+    /// that only drives the thigh/knee POSITIONS. Like MMD (and blender_mmd_tools),
+    /// the 足ＩＫ rotation is ignored and the ankle keeps its own 足首 FK rotation —
+    /// applying the 足ＩＫ rotation to the ankle would dump its twist into the ankle's
+    /// local rotation, blow the "Foot Twist" muscle out of range and flip the foot
+    /// (ankle + instep) on playback. A muscle-range correction (on by default) may
+    /// additionally roll an out-of-range foot twist into the shin (invisible, all
+    /// positions unchanged) for the rare VPDs whose 足首 FK itself twists a lot.
     /// </summary>
     public class VpdRetargeter
     {
@@ -114,7 +119,7 @@ namespace VpdToAnim
         public AlignMode Align = AlignMode.Arms;
         public bool Fingers = true;
         public bool Eyes;
-        public TwistCorrectMode TwistCorrection = TwistCorrectMode.None;   // per-leg foot flip fix
+        public LegCorrectionMode LegCorrection = LegCorrectionMode.Auto;   // foot-flip fix (twist redistribution)
         public float ManualScale;                 // 0 = automatic (hip-height ratio)
 
         public float UsedScale { get; private set; } = 1f;
@@ -125,7 +130,6 @@ namespace VpdToAnim
             public bool Active;
             public HumanBodyBones Upper, Knee, Ankle;
             public Vector3 TargetLocal;      // Unity space, relative to the rig root
-            public Quaternion AnkleDelta;    // Unity world-space delta from the 足ＩＫ bone
         }
 
         readonly Dictionary<string, Quaternion> _worldRot = new Dictionary<string, Quaternion>(); // MMD space
@@ -137,13 +141,14 @@ namespace VpdToAnim
         public readonly List<string> MappedOk = new List<string>();
         public readonly List<string> MappedMissing = new List<string>();
         public readonly List<string> IkNotes = new List<string>();
+        public readonly List<string> CorrectionNotes = new List<string>();
         public IReadOnlyDictionary<HumanBodyBones, MmdDef> Resolved => _resolved;
 
         // ------------------------------------------------------------------
         public void Prepare(AvatarRig rig)
         {
             _worldRot.Clear(); _worldPos.Clear(); _resolved.Clear(); _alignCorr.Clear();
-            MappedOk.Clear(); MappedMissing.Clear(); IkNotes.Clear();
+            MappedOk.Clear(); MappedMissing.Clear(); IkNotes.Clear(); CorrectionNotes.Clear();
 
             // 1) accumulate MMD world transforms (parents precede children in Defs)
             foreach (var d in MmdSkeleton.Defs)
@@ -233,8 +238,10 @@ namespace VpdToAnim
                 _alignCorr[hbb] = corr;
             }
 
-            // 5) leg IK setup: a posed (non-identity) 足ＩＫ bone means the whole leg
-            //    is IK-driven in MMD; its FK chain values are overridden by the solver.
+            // 5) leg IK setup: a posed (non-identity) 足ＩＫ bone means the leg is
+            //    IK-driven in MMD. The 足ＩＫ POSITION is the ankle target for the
+            //    thigh/knee solve; its ROTATION is ignored by MMD (the ankle keeps
+            //    the 足首 FK rotation), so it is ignored here too.
             for (int s = 0; s < 2; s++)
             {
                 bool leftSide = s == 0;
@@ -255,21 +262,10 @@ namespace VpdToAnim
                     var p = MmdConvert.Pos(_worldPos[ikKey]) * UsedScale;
                     if (Mirror) p.x = -p.x;
                     leg.TargetLocal = p;
-                    var dq = MmdConvert.Rot(_worldRot[ikKey]);
-                    if (Mirror) dq = MmdConvert.MirrorRot(dq);
-                    leg.AnkleDelta = dq;
                     IkNotes.Add($"{(leftSide ? "左腿" : "右腿")} ← {vb.Name}（IK 驱动）");
                 }
                 _ikLegs[s] = leg;
             }
-        }
-
-        bool IkSuppressed(HumanBodyBones hbb)
-        {
-            foreach (var l in _ikLegs)
-                if (l != null && l.Active && (hbb == l.Upper || hbb == l.Knee || hbb == l.Ankle))
-                    return true;
-            return false;
         }
 
         // ------------------------------------------------------------------
@@ -294,8 +290,10 @@ namespace VpdToAnim
                 var pp = targetWorldPos[p];
 
                 Quaternion w; Vector3 pos;
-                if (rig.BoneOf.TryGetValue(t, out var hbb) && _resolved.TryGetValue(hbb, out var def)
-                    && !IkSuppressed(hbb))
+                // Every mapped bone (including the leg chain of an IK-driven leg)
+                // gets its VPD FK delta — the ankle's orientation comes from the
+                // 足首 FK here, exactly as MMD plays it back.
+                if (rig.BoneOf.TryGetValue(t, out var hbb) && _resolved.TryGetValue(hbb, out var def))
                 {
                     var delta = MmdConvert.Rot(_worldRot[def.Key]);      // MMD rest world rot == identity
                     if (Mirror) delta = MmdConvert.MirrorRot(delta);
@@ -320,15 +318,15 @@ namespace VpdToAnim
             foreach (var leg in _ikLegs)
                 if (leg != null && leg.Active) SolveLegIk(rig, leg);
 
-            // Muscle-range correction for IK-driven feet (opt-in, per side).
-            // The ankle's world orientation is forced by the 足ＩＫ bone, so it is
-            // always correct in the scene; but the twist may be parked in the
-            // ankle's LOCAL rotation, where HumanPoseHandler can extract an
-            // out-of-range "Foot Twist" muscle. Muscles get clamped on playback,
-            // so the foot then snaps/flips in- or outward even though the preview
-            // was fine. Roll the twist up the chain (shin/thigh) of the selected
-            // leg(s) until the REAL muscle values of this avatar are back in range.
-            if (TwistCorrection != TwistCorrectMode.None && rig.Anim.isHuman && rig.Anim.avatar != null)
+            // Muscle-range correction for both feet (automatic, FK- and IK-driven legs).
+            // The ankle's world position/orientation stay exactly where the VPD puts
+            // them — but a 足首 FK that twists the foot beyond this avatar's "Foot
+            // Twist" muscle range would be clamped on playback and visibly flip the
+            // foot in- or outward. Roll the excess twist into the shin (about the
+            // shin axis — invisible: ankle position, knee position and the ankle's
+            // world orientation are all preserved) until the REAL muscle values of
+            // this avatar are back in range.
+            if (LegCorrection == LegCorrectionMode.Auto && rig.Anim.isHuman && rig.Anim.avatar != null)
             {
                 using (var handler = new HumanPoseHandler(rig.Anim.avatar, rig.Root))
                 {
@@ -336,11 +334,10 @@ namespace VpdToAnim
                     for (int s = 0; s < 2; s++)
                     {
                         var leg = _ikLegs[s];
-                        if (leg == null || !leg.Active) continue;
-                        bool leftSide = s == 0;
-                        if (TwistCorrection == TwistCorrectMode.LeftOnly && !leftSide) continue;
-                        if (TwistCorrection == TwistCorrectMode.RightOnly && leftSide) continue;
-                        CorrectLegTwist(rig, handler, ref hp, leg);
+                        if (leg == null) continue;
+                        if (!rig.Bone.ContainsKey(leg.Upper) || !rig.Bone.ContainsKey(leg.Knee)
+                            || !rig.Bone.ContainsKey(leg.Ankle)) continue;
+                        CorrectLegTwist(rig, handler, ref hp, leg, s == 0);
                     }
                 }
             }
@@ -348,6 +345,10 @@ namespace VpdToAnim
             return hips;
         }
 
+        /// <summary>CCD two-bone solve for an IK-driven leg. Only the thigh and knee
+        /// are rotated (the 足ＩＫ POSITION is the ankle target); the ankle keeps the
+        /// orientation the FK pass gave it from the 足首 FK delta — MMD ignores the
+        /// 足ＩＫ rotation, so forcing it here would twist the ankle out of muscle range.</summary>
         void SolveLegIk(AvatarRig rig, IkLeg leg)
         {
             var upper = rig.Bone[leg.Upper];
@@ -376,79 +377,63 @@ namespace VpdToAnim
                 if ((A - K).sqrMagnitude > 1e-10f && (T - K).sqrMagnitude > 1e-10f)
                     SetWorldRot(knee, Quaternion.FromToRotation(A - K, T - K) * knee.rotation);
             }
-
-            // ankle orientation comes from the 足ＩＫ bone's world rotation
-            SetWorldRot(ankle, leg.AnkleDelta * rig.RestWorldRot[ankle]);
+            // The ankle orientation is NOT set here — it stays as the FK pass
+            // computed it from the 足首 FK delta.
         }
 
         /// <summary>
         /// Greedy twist redistribution driven by the avatar's REAL muscle values:
-        /// while any twist muscle of the leg (foot / lower leg / upper leg) is out
-        /// of range, roll the shin or the thigh about its own bone axis by a small
-        /// step in whichever direction reduces the worst muscle. Positions and the
-        /// ankle's final world orientation are restored after every roll, so only
-        /// the twist distribution along the chain changes.
+        /// while the foot twist muscle (or the shin twist it is rolled into) is out
+        /// of range, roll the shin about its own axis by a small step in whichever
+        /// direction reduces the worst muscle. Rolling the shin about the shin axis
+        /// keeps the ankle position, the knee position and the ankle's world
+        /// orientation untouched, so only the twist distribution between the ankle's
+        /// and the shin's local rotations changes — nothing visible moves. The thigh
+        /// is deliberately NOT rolled: rolling it about the hip→knee axis swings the
+        /// knee off the leg line (catastrophically so for straight legs).
         /// </summary>
-        void CorrectLegTwist(AvatarRig rig, HumanPoseHandler handler, ref HumanPose hp, IkLeg leg)
+        void CorrectLegTwist(AvatarRig rig, HumanPoseHandler handler, ref HumanPose hp, IkLeg leg, bool leftSide)
         {
             int footI = TwistMuscleIndex(leg.Ankle);
             int shinI = TwistMuscleIndex(leg.Knee);
             int thighI = TwistMuscleIndex(leg.Upper);
             if (footI < 0 || shinI < 0 || thighI < 0) return;
 
+            // Invariants: the ankle's current position and world orientation.
             var ankle = rig.Bone[leg.Ankle];
-            Vector3 T = rig.RestWorldPos[rig.Root] + rig.RestWorldRot[rig.Root] * leg.TargetLocal;
-            var ankleTargetWorld = leg.AnkleDelta * rig.RestWorldRot[ankle];
+            var ankleTargetWorld = ankle.rotation;
 
             const float Step = 15f, Goal = 0.95f;
             float score = LegTwistScore(handler, ref hp, footI, shinI, thighI);
-            for (int iter = 0; iter < 20 && score > Goal; iter++)
+            float start = score;
+            for (int iter = 0; iter < 30 && score > Goal; iter++)
             {
                 float bestScore = score, bestSign = 0f;
-                bool bestShin = false;
-                for (int j = 0; j < 2; j++)
+                for (int sgn = -1; sgn <= 1; sgn += 2)
                 {
-                    bool shin = j == 0;
-                    for (int sgn = -1; sgn <= 1; sgn += 2)
-                    {
-                        var snap = SnapshotLeg(rig, leg);
-                        RollLegJoint(rig, leg, shin, sgn * Step, T, ankleTargetWorld);
-                        float sc = LegTwistScore(handler, ref hp, footI, shinI, thighI);
-                        RestoreLeg(snap, rig, leg);
-                        if (sc < bestScore - 1e-4f) { bestScore = sc; bestShin = shin; bestSign = sgn; }
-                    }
+                    var snap = SnapshotLeg(rig, leg);
+                    RollShin(rig, leg, sgn * Step, ankleTargetWorld);
+                    float sc = LegTwistScore(handler, ref hp, footI, shinI, thighI);
+                    RestoreLeg(snap, rig, leg);
+                    if (sc < bestScore - 1e-4f) { bestScore = sc; bestSign = sgn; }
                 }
                 if (bestSign == 0f) break;      // no improving roll: best effort reached
-                RollLegJoint(rig, leg, bestShin, bestSign * Step, T, ankleTargetWorld);
+                RollShin(rig, leg, bestSign * Step, ankleTargetWorld);
                 score = bestScore;
             }
+            if (score < start - 1e-3f)
+                CorrectionNotes.Add($"{(leftSide ? "左腿" : "右腿")}：脚踝扭转超出 muscle 范围，已分配到小腿（{start:F2} → {score:F2}）");
         }
 
-        /// <summary>Rolls the shin (or thigh) about its bone axis, then restores the
-        /// ankle position (thigh roll moves it) and the ankle's world orientation.</summary>
-        static void RollLegJoint(AvatarRig rig, IkLeg leg, bool shin, float angleDeg,
-            Vector3 target, Quaternion ankleTargetWorld)
+        /// <summary>Rolls the shin about the shin axis (ankle stays on the axis, so its
+        /// position is preserved), then restores the ankle's world orientation.</summary>
+        static void RollShin(AvatarRig rig, IkLeg leg, float angleDeg, Quaternion ankleTargetWorld)
         {
-            var upper = rig.Bone[leg.Upper];
             var knee = rig.Bone[leg.Knee];
             var ankle = rig.Bone[leg.Ankle];
-            if (shin)
-            {
-                var axis = ankle.position - knee.position;
-                if (axis.sqrMagnitude < 1e-10f) return;
-                SetWorldRot(knee, Quaternion.AngleAxis(angleDeg, axis.normalized) * knee.rotation);
-            }
-            else
-            {
-                var axis = knee.position - upper.position;
-                if (axis.sqrMagnitude < 1e-10f) return;
-                SetWorldRot(upper, Quaternion.AngleAxis(angleDeg, axis.normalized) * upper.rotation);
-                // re-place the ankle on the IK target (the roll moved it)
-                var from = ankle.position - knee.position;
-                var to = target - knee.position;
-                if (from.sqrMagnitude > 1e-10f && to.sqrMagnitude > 1e-10f)
-                    SetWorldRot(knee, Quaternion.FromToRotation(from, to) * knee.rotation);
-            }
+            var axis = ankle.position - knee.position;
+            if (axis.sqrMagnitude < 1e-10f) return;
+            SetWorldRot(knee, Quaternion.AngleAxis(angleDeg, axis.normalized) * knee.rotation);
             SetWorldRot(ankle, ankleTargetWorld);
         }
 
@@ -505,6 +490,8 @@ namespace VpdToAnim
             sb.AppendLine($"已映射（{MappedOk.Count}）：" + string.Join(", ", MappedOk));
             if (IkNotes.Count > 0)
                 sb.AppendLine("IK：" + string.Join(", ", IkNotes));
+            if (CorrectionNotes.Count > 0)
+                sb.AppendLine("腿部矫正：" + string.Join("；", CorrectionNotes));
             if (MappedMissing.Count > 0)
                 sb.AppendLine("avatar 上未映射：" + string.Join(", ", MappedMissing));
             var unused = new List<string>();

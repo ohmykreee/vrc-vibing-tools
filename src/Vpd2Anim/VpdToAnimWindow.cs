@@ -1,4 +1,4 @@
-// Co-coded with Kimi K3 (max) in OpenCode
+// Co-coded with Kimi K3 (max) & DeepSeek V4 Flash (0731 max) in OpenCode
 
 using System;
 using System.Collections.Generic;
@@ -47,7 +47,7 @@ namespace VpdToAnim
         [SerializeField] bool _fingers = true;
         [SerializeField] bool _eyes;
         [SerializeField] bool _extraBones;
-        [SerializeField] TwistCorrectMode _twistCorrectMode = TwistCorrectMode.None;
+        [SerializeField] LegCorrectionMode _legCorrection = LegCorrectionMode.Auto;
         [SerializeField] AlignMode _align = AlignMode.Arms;
         [SerializeField] OutputMode _mode = OutputMode.HumanoidMuscle;
         [SerializeField] float _manualScale;
@@ -73,12 +73,10 @@ namespace VpdToAnim
             new GUIContent("仅手臂（默认，推荐）"),
             new GUIContent("全部（手臂+腿+脊柱）"),
         };
-        static readonly GUIContent[] TwistCorrectLabels =
+        static readonly GUIContent[] LegCorrectionLabels =
         {
-            new GUIContent("无（默认，不做矫正）"),
-            new GUIContent("仅左脚"),
-            new GUIContent("仅右脚"),
-            new GUIContent("双脚"),
+            new GUIContent("无（原始 VPD，大幅姿势时脚踝与脚背可能翻转）"),
+            new GUIContent("自动（默认，推荐）"),
         };
 
         // ==================================================================
@@ -215,10 +213,10 @@ namespace VpdToAnim
             _eyes = EditorGUILayout.Toggle("眼睛", _eyes);
             _extraBones = EditorGUILayout.Toggle(new GUIContent("额外骨骼（按名字匹配）",
                 "为 avatar 中与 VPD 骨骼完全同名的非 humanoid 骨骼（MMD 系模型的头发/裙子等）写 transform 曲线。"), _extraBones);
-            _twistCorrectMode = (TwistCorrectMode)EditorGUILayout.Popup(new GUIContent("腿部扭转矫正",
-                "足ＩＫ 驱动的腿若脚踝扭转超出该 avatar 的 muscle 范围，播放时该脚会内外翻转。\n" +
-                "矫正会把多余扭转分配到小腿/大腿上。默认「无」；某只脚翻转时，选对应侧重新转换即可。"),
-                (int)_twistCorrectMode, TwistCorrectLabels);
+            _legCorrection = (LegCorrectionMode)EditorGUILayout.Popup(new GUIContent("腿部扭转矫正",
+                "少数 VPD 的足首 FK 扭转会超出该 avatar 的 muscle 范围，播放时脚踝/脚背会内外翻转。\n" +
+                "「自动」（默认）会把多余扭转分配到小腿（外观不变），避免翻转。"),
+                (int)_legCorrection, LegCorrectionLabels);
             _manualScale = EditorGUILayout.FloatField(new GUIContent("Hip 缩放（0 = 自动）",
                 "髋部位移换算比例（米 / MMD 单位）。0 = 按 avatar 髋高 ÷ MMD 髋高自动计算。"), _manualScale);
         }
@@ -276,20 +274,19 @@ namespace VpdToAnim
                 "● 眼睛（默认关）：转换眼球方向。VRChat 眼球一般由 SDK 眼动控制，建议关。\n" +
                 "● 额外骨骼（默认关）：avatar 中与 VPD 骨骼完全同名的非 humanoid 骨骼\n" +
                 "  （MMD 系模型的头发/裙子）也写曲线。一般保持关闭。\n" +
-                "● 腿部扭转矫正（默认无）：足ＩＫ 腿的脚踝扭转超出 muscle 范围时，把多余\n" +
-                "  扭转分配到小腿/大腿，避免播放时该脚内外翻转。分「仅左脚/仅右脚/双脚」；\n" +
-                "  转换后若某只脚翻转，选对应侧重新转换即可（只影响所选侧）。");
+                "● 腿部扭转矫正（默认自动）：少数 VPD 的足首 FK 扭转会超出该 avatar 的 muscle 范围，\n" +
+                "  播放时脚踝/脚背会内外翻转。「自动」会把多余扭转自动分配到小腿（外观不变）；\n" +
+                "  选「无」则保持原始 VPD。");
             HelpFold(4, "Hip 缩放（0 = 自动）",
                 "髋部位移的换算比例（米 / MMD 单位）。\n" +
                 "0（默认）= 自动：按「avatar 髋部高度 ÷ MMD 髋部高度」计算，绝大多数情况正确。\n" +
                 "只有自动结果明显不对（比例很特殊的模型）时才手动填，参考值约 0.08 ~ 0.12。");
             HelpFold(5, "腿部 IK（自动处理，无需设置）",
                 "很多 VPD 里腿部 FK 骨骼（足/ひざ/足首）是单位旋转，腿部姿势由\n" +
-                "「足ＩＫ」骨骼（位移+旋转）驱动。本工具检测到非单位旋转的足ＩＫ 时\n" +
-                "会自动对那条腿做两腿 IK 解算（含脚踝朝向）；FK 腿则保持原样。\n" +
-                "若某只脚转换后在播放时内外翻转（脚踝扭转超出 muscle 范围），\n" +
-                "可在「腿部扭转矫正」中选择对应侧重新转换进行修正。\n" +
-                "转换报告中会标注哪条腿走了 IK。");
+                "「足ＩＫ」骨骼驱动。本工具检测到被摆动的足ＩＫ 时，会自动对该腿做\n" +
+                "两腿 IK 解算。与 MMD 一致（参考 blender_mmd_tools 的行为）：足ＩＫ 的\n" +
+                "位移驱动大腿/小腿的位置，足ＩＫ 的旋转被忽略；脚踝朝向始终来自\n" +
+                "VPD 里足首的 FK 旋转。转换报告中会标注哪条腿走了 IK。");
             HelpFold(6, "恢复初始姿势 / 注意事项",
                 "● 转换结束后场景 avatar 一定会自动恢复原姿势，不会残留。\n" +
                 "● 场景 avatar 若已被摆出姿势：拖入 avatar 栏后点右侧【恢复初始姿势】，\n" +
@@ -437,7 +434,7 @@ namespace VpdToAnim
             var rt = new VpdRetargeter
             {
                 Pose = pose, Mirror = _mirror, Align = _align, Fingers = _fingers, Eyes = _eyes,
-                TwistCorrection = _twistCorrectMode, ManualScale = _manualScale
+                LegCorrection = _legCorrection, ManualScale = _manualScale
             };
             rt.Prepare(rig);
             return rt;

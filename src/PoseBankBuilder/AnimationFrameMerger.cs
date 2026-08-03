@@ -1,4 +1,4 @@
-// Co-coded with DeepSeek V4 Flash (max) in OpenCode
+// Co-coded with DeepSeek V4 Flash (0731 max) in OpenCode
 
 using System;
 using System.Collections.Generic;
