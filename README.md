@@ -18,3 +18,4 @@
 1. BlendShapeSync：最早的小工具，同步两个相同模型的 BlendShape 状态，基本上用不着。
 2. Vpd2Anim：将 MMD 的 VPD 文件转换为单帧 Humanoid 可用的 Anim 文件。
 3. PoseBankBuilder：将多个姿势 Anim 文件合并为 [BUDDYWORKS Poses Extension](https://repo.buddyworks.wtf/) 可用的 PoseBank 格式。
+4. PoseEditor：将 Humanoid 角色的姿势连同 body mesh、骨架导出为 FBX（依赖官方 FBX Exporter 插件），方便在 Blender 等外部 3D 程序中修改姿势；并可从修改后的 FBX 中提取动画生成单帧/完整 Anim 文件（这个 AI 写崩了所以你自己做吧）。
