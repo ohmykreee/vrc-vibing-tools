@@ -5,7 +5,7 @@
 3. 没有义务提供使用指导。
 
 ## 安装/使用方法
-1. 去 [Releases](https://github.com/ohmykreee/vrc-vibing-tools/releases) 中下载最新的 UnityPackage 然后双击导入；
+1. 去 [Releases](https://github.com/ohmykreee/vrc-vibing-tools/releases/latest) 中下载最新的 UnityPackage 然后双击导入；
 2. 因为已经将文件 GUID 打包进包中所以更新直接重新导入新包。
 
 或者：
