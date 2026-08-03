@@ -5,14 +5,14 @@
 3. 没有义务提供使用指导。
 
 ## 安装/使用方法
-1. 克隆/下载整个项目；
-2. 将 `src` 文件夹下的工具代码复制到 `Assets/Editor` 下；
-3. 如果要更新代码，删掉老代码然后复制进新代码。
+1. 去 [Releases](https://github.com/ohmykreee/vrc-vibing-tools/releases) 中下载最新的 UnityPackage 然后双击导入；
+2. 因为已经将文件 GUID 打包进包中所以更新直接重新导入新包。
 
 或者：
 
-1. 去 [Releases](https://github.com/ohmykreee/vrc-vibing-tools/releases) 中下载最新的 UnityPackage 然后双击导入；
-2. 因为已经将文件 GUID 打包进包中所以更新直接重新导入新包。
+1. 克隆/下载整个项目；
+2. 将 `src` 文件夹下的工具代码复制到 `Assets/Editor` 下；
+3. 如果要更新代码，删掉老代码然后复制进新代码。
 
 ## 工具简介
 1. BlendShapeSync：最早的小工具，同步两个相同模型的 BlendShape 状态，基本上用不着。
